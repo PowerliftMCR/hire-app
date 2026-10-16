@@ -1,0 +1,26 @@
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f2f5f8;color:#1a2530;font-size:17px}
+header{position:sticky;top:0;z-index:5;background:#0b3d5c;color:#fff;display:flex;align-items:center;gap:8px;padding:calc(10px + env(safe-area-inset-top)) 12px 10px}
+header h1{flex:1;font-size:19px;margin:0}.hdrbtn{background:none;border:0;color:#fff;font-size:26px;min-width:44px;min-height:44px}
+main{padding:14px;max-width:640px;margin:auto;padding-bottom:calc(80px + env(safe-area-inset-bottom))}
+.big{display:block;width:100%;padding:38px 10px;margin:14px 0;font-size:26px;font-weight:700;border:0;border-radius:16px;color:#fff;box-shadow:0 3px 8px #0002}
+.del{background:#1b7f4b}.col{background:#d9731a}
+.card{background:#fff;border-radius:12px;padding:14px;margin:12px 0;box-shadow:0 1px 3px #0001}
+.card h2{margin:0 0 10px;font-size:18px;color:#0b3d5c}
+label{display:block;font-weight:600;margin:10px 0 4px;font-size:15px}
+input,select,textarea{width:100%;font-size:17px;padding:12px;border:1px solid #b8c4cf;border-radius:10px;background:#fff;min-height:48px}
+textarea{min-height:80px}
+.seg{display:flex;gap:6px}.seg button{flex:1;min-height:50px;font-size:16px;border:2px solid #0b3d5c;background:#fff;color:#0b3d5c;border-radius:10px;font-weight:600}
+.seg button.on{background:#0b3d5c;color:#fff}
+.chk{display:flex;align-items:center;gap:10px;font-weight:600;min-height:48px}.chk input{width:28px;height:28px;min-height:0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #eee}.row span{flex:1}.row .seg{flex:0 0 170px}
+.row .seg button.on.bad{background:#c0392b;border-color:#c0392b}
+canvas.sig{width:100%;height:170px;border:2px dashed #8aa;border-radius:10px;background:#fff;touch-action:none}
+.btn{min-height:50px;padding:0 18px;font-size:17px;border-radius:10px;border:0;background:#0b3d5c;color:#fff;font-weight:600}
+.btn.sec{background:#e3e9ef;color:#0b3d5c}.btn.wide{width:100%}
+.save{margin:18px 0 60px}
+.save .btn{width:100%;max-width:612px;display:block;margin:auto;background:#1b7f4b;font-size:20px;min-height:58px}
+.photos{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.photos div{position:relative}.photos img{width:90px;height:90px;object-fit:cover;border-radius:8px}
+.photos button{position:absolute;top:-6px;right:-6px;border-radius:50%;border:0;background:#c0392b;color:#fff;width:28px;height:28px}
+.hint{color:#5a6a78;font-size:14px}.err{color:#c0392b;font-weight:600}
+.toast{position:fixed;left:50%;bottom:100px;transform:translateX(-50%);background:#1a2530;color:#fff;padding:12px 18px;border-radius:10px;z-index:9}
+.list .item{display:flex;gap:8px;margin:6px 0}.list input{flex:1}

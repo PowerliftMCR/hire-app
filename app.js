@@ -90,16 +90,26 @@ async function collection(){setHeader('Collection',true);const hires=await get('
  app.innerHTML=`<div class="card"><h2>Active hires</h2>${act.length?`<select id="hireSel"><option value="">-- choose hire --</option>${act.map(h=>`<option value="${h.id}">${esc(h.customer.name)} - ${esc(h.item.name)} (${fmt(h.start)} to ${fmt(h.end)})</option>`).join('')}</select>`:'<p class="hint">No active hires. Save a delivery first.</p>'}
  <div id="hireInfo"></div></div><div id="rest" hidden>${conditionHTML()}
  <div class="card"><h2>Collected late?</h2><p class="hint" id="lateHint"></p>${seg('late',[['no','No'],['yes','Yes']],'no')}<label>Collection date</label><input type="date" id="colDate" value="${today()}"></div>
- ${sigHTML()}<div id="errs" class="err"></div><div class="save"><button class="btn" id="saveBtn">Save &amp; download PDF</button></div></div>`;
+ ${sigHTML()}<div class="card" id="dmgCard" hidden><h2>Balance owed for damages</h2><p class="hint">Standard charges from the hire terms (clause 9.2). Adjust quantities or override the total if needed.</p><div id="dmgList"></div>
+ <label>Calculated total</label><input id="dmgCalc" readonly><label>Amount owed (£) - edit to override</label><input id="dmgAmt" type="number" inputmode="decimal" step="0.01" min="0"><label>Damage notes</label><textarea id="dmgNotes"></textarea><label>Invoice to be raised?</label>${seg('dmgInv',[['yes','Yes'],['no','No']],'yes')}</div>
+ <div id="errs" class="err"></div><div class="save"><button class="btn" id="saveBtn">Save &amp; download PDF</button></div></div>`;
  if(!act.length)return;let h;
  const sugg=()=>{const late=$('#colDate').value>h.end;$('#lateHint').textContent=`Hire end: ${fmt(h.end)}. Suggested: ${late?'YES - late':'No - on time'}.`;app.querySelectorAll('[data-seg="late"] button').forEach(b=>b.classList.toggle('on',b.dataset.v===(late?'yes':'no')))};
  $('#hireSel').onchange=async()=>{h=act.find(x=>x.id===$('#hireSel').value);if(!h){$('#rest').hidden=true;$('#hireInfo').innerHTML='';return}
   const c=h.customer;$('#hireInfo').innerHTML=`<label>Customer</label><input value="${esc(c.name+(c.company?' ('+c.company+')':''))}" readonly><label>Item</label><input value="${esc(h.item.name)}" readonly>
   <label>Hire dates</label><input value="${fmt(h.start)} to ${fmt(h.end)} (${h.hireType==='week'?'Week':'Day'} hire)" readonly>`;
-  $('#rest').hidden=false;if(!pads.inited){bindSegs();bindPhotos();await bindSigs();pads.inited=true}$('#custSigName').value='';sugg()};
+  $('#rest').hidden=false;if(!pads.inited){bindSegs(n=>{if(n.startsWith('chk'))dmgUpdate()});bindPhotos();await bindSigs();pads.inited=true}$('#custSigName').value='';sugg()};
  $('#colDate').onchange=()=>h&&sugg();pads.inited=false;
+ let dmgOverride=false;const qty={};
+ const dmgItems=()=>CHECKS.map((c,i)=>({...c,i})).filter(c=>segVal('chk'+c.i)==='defect').map(c=>{const unit=parseFloat(c.charge.replace(/[^0-9.]/g,''))||0,each=/each/i.test(c.charge),q=each?(qty[c.i]||1):1;return{name:c.name,charge:c.charge,unit,qty:q,each,amount:unit*q,i:c.i}});
+ const dmgUpdate=()=>{const it=dmgItems();$('#dmgCard').hidden=!it.length;
+  $('#dmgList').innerHTML=it.map(d=>`<div class="row"><span>${esc(d.name)}<br><small class="hint">${esc(d.charge)}</small></span>${d.each?`<input type="number" min="1" value="${d.qty}" data-q="${d.i}" style="width:70px;flex:0 0 70px">`:''}<b style="min-width:70px;text-align:right">£${d.amount.toFixed(2)}</b></div>`).join('');
+  $('#dmgList').querySelectorAll('[data-q]').forEach(e=>e.onchange=()=>{qty[e.dataset.q]=Math.max(1,parseInt(e.value)||1);dmgUpdate()});
+  const tot=it.reduce((a,d)=>a+d.amount,0);$('#dmgCalc').value='£'+tot.toFixed(2);if(!dmgOverride)$('#dmgAmt').value=tot.toFixed(2)};
+ $('#dmgAmt').oninput=()=>dmgOverride=$('#dmgAmt').value!=='';
  $('#saveBtn').onclick=async()=>{const err=[];const sig=readSigs(err);if(err.length){$('#errs').textContent='Please complete: '+err.join(', ');return}
-  const all=await get('hires',[]);const rec=all.find(x=>x.id===h.id);rec.collection={date:$('#colDate').value,late:segVal('late')==='yes',...readCond(),...sig};
+  const all=await get('hires',[]);const rec=all.find(x=>x.id===h.id);const di=dmgItems(),calc=di.reduce((a,d)=>a+d.amount,0),amt=di.length?(parseFloat($('#dmgAmt').value)||0):0;
+  rec.collection={date:$('#colDate').value,late:segVal('late')==='yes',damages:{items:di.map(({i,...d})=>d),calculated:calc,amount:amt,overridden:di.length>0&&Math.abs(amt-calc)>0.001,notes:di.length?$('#dmgNotes').value.trim():'',invoice:di.length?segVal('dmgInv')==='yes':false},...readCond(),...sig};
   await put('hires',all);await rememberDriver(sig.drvSigName);done(await makePdf(rec,'Collection'))}}
 function fmt(d){if(!d)return'';const[y,m,dd]=d.split('-');return`${dd}/${m}/${y}`}
 // ---------- after save ----------
@@ -126,6 +136,14 @@ async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({u
  sect('Condition checklist (hire terms cl. 9.2)');doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(90);doc.text('Item',M+2,y);doc.text('Standard charge',M+105,y);doc.text('Status',M+150,y);doc.setTextColor(0);y+=6;r.checks.forEach(k=>{need(7);doc.setFont('helvetica','normal');doc.setFontSize(10);doc.text(k.name,M+2,y);doc.text(k.charge||'',M+105,y);const bad=k.status==='defect';doc.setFont('helvetica','bold');doc.setTextColor(bad?192:27,bad?57:127,bad?43:75);doc.text(bad?'DEFECT':'OK',M+150,y);doc.setTextColor(0);y+=6});
  field('Defect notes',r.notes||'None');
  if(r.photos.length){sect('Defect photos');const pw=(W-2*M-8)/3;let col=0;for(const p of r.photos){const im=await dims(p);const ph=Math.min(pw*im.h/im.w,70);if(col===0)need(ph+4);doc.addImage(p,'JPEG',M+col*(pw+4),y,pw,ph);col++;if(col===3){col=0;y+=ph+4}else if(col===1)doc._rowH=ph;doc._rowH=Math.max(doc._rowH||0,ph)}if(col)y+=doc._rowH+4;doc._rowH=0}
+ if(kind==='Collection'){const dm=r.damages;sect('Balance owed for damages');
+  if(!dm||!dm.items.length){field('Damage charges','No damage charges')}else{
+   doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(90);doc.text('Item',M+2,y);doc.text('Standard charge',M+105,y);doc.text('Qty',M+140,y);doc.text('Amount',W-M-2,y,{align:'right'});doc.setTextColor(0);y+=6;
+   dm.items.forEach(d=>{need(7);doc.setFont('helvetica','normal');doc.setFontSize(10);doc.text(d.name,M+2,y);doc.text(d.charge,M+105,y);doc.text(String(d.qty),M+140,y);doc.text('£'+d.amount.toFixed(2),W-M-2,y,{align:'right'});y+=6});
+   need(8);doc.setDrawColor(150);doc.line(M+100,y-3,W-M,y-3);doc.setFont('helvetica','bold');doc.text('Standard charges total',M+105,y+1);doc.text('£'+dm.calculated.toFixed(2),W-M-2,y+1,{align:'right'});y+=7;
+   if(dm.overridden){field('Adjusted amount','£'+dm.amount.toFixed(2)+' (manually adjusted)')}
+   need(9);doc.setFillColor(253,236,234);doc.rect(M,y-5,W-2*M,8,'F');doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(192,57,43);doc.text('TOTAL OWED FOR DAMAGES',M+2,y);doc.text('£'+dm.amount.toFixed(2),W-M-2,y,{align:'right'});doc.setTextColor(0);y+=9;
+   field('Invoice to be raised',dm.invoice?'Yes':'No');if(dm.notes)field('Damage notes',dm.notes)}}
  need(62);sect('Signatures');const sw=(W-2*M-10)/2;
  [[`Customer`,r.custSig,r.custSigName],[`Driver`,r.drvSig,r.drvSigName]].forEach(([l,img,n],i)=>{const x=M+i*(sw+10);doc.setDrawColor(150);doc.rect(x,y,sw,32);doc.addImage(img,'JPEG',x+1,y+1,sw-2,30);doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(`${l}: ${n}`,x,y+38);doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.text('Signed '+new Date().toLocaleString('en-GB'),x,y+43)});y+=48;
  const n=doc.getNumberOfPages();for(let i=1;i<=n;i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(120);doc.text(`${BIZ.name} - ${kind} form - page ${i} of ${n}`,W/2,292,{align:'center'})}

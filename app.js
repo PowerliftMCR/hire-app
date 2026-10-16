@@ -121,10 +121,10 @@ function done({blob,name}){setHeader('Saved',true);const url=URL.createObjectURL
  const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();scrollTo(0,0)}
 // ---------- PDF ----------
 async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'mm',format:'a4',compress:true});const W=210,M=14;let y=0;
- const head=()=>{doc.setFillColor(11,61,92);doc.rect(0,0,W,26,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(18);doc.text(BIZ.name,M,12);
+ const head=()=>{doc.setFillColor(31,37,45);doc.rect(0,0,W,26,'F');doc.setFillColor(180,99,43);doc.rect(0,26,W,1.2,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(18);doc.text(BIZ.name,M,12);
   doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.text(`${BIZ.email}  |  ${BIZ.phone}  |  ${BIZ.web}`,M,20);doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(kind.toUpperCase()+' FORM',W-M,12,{align:'right'});doc.setTextColor(0);y=34};
  const need=n=>{if(y+n>285){doc.addPage();head()}};
- const sect=t=>{need(14);doc.setFillColor(230,236,242);doc.rect(M,y-5,W-2*M,8,'F');doc.setFont('helvetica','bold');doc.setFontSize(11.5);doc.setTextColor(11,61,92);doc.text(t,M+2,y);doc.setTextColor(0);y+=8};
+ const sect=t=>{need(14);doc.setFillColor(238,240,243);doc.rect(M,y-5,W-2*M,8,'F');doc.setFont('helvetica','bold');doc.setFontSize(11.5);doc.setTextColor(31,37,45);doc.text(t,M+2,y);doc.setTextColor(0);y+=8};
  const field=(l,v)=>{const lines=doc.splitTextToSize(String(v||'-'),W-2*M-50);need(lines.length*5+2);doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(l,M+2,y);doc.setFont('helvetica','normal');doc.text(lines,M+50,y);y+=lines.length*5+1.5};
  head();const c=h.customer,r=kind==='Delivery'?h.delivery:h.collection;
  field('Reference',h.id.toUpperCase());field(kind+' date',fmt(r.date));

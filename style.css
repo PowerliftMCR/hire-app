@@ -25,3 +25,7 @@ canvas.sig{width:100%;height:170px;border:2px dashed #8aa;border-radius:10px;bac
 .toast{position:fixed;left:50%;bottom:100px;transform:translateX(-50%);background:#1F252D;color:#fff;padding:12px 18px;border-radius:10px;z-index:9}
 .btn:active,.big:active{filter:brightness(.9)}input:focus,select:focus,textarea:focus{outline:2px solid #B4632B;border-color:#B4632B}
 .list .item{display:flex;gap:8px;margin:6px 0}.list input{flex:1}
+.cnote{margin:4px 0 8px}.pre{color:#8E4B1E;font-weight:600}
+.quick{display:flex;gap:8px;margin-top:8px}.quick .btn{flex:1;min-height:44px;font-size:15px}
+.draft{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border-color:#B4632B;background:#FBF2EC}.draft .btn{margin-left:auto;min-height:44px}
+.hirerow{flex-wrap:wrap}.hirerow span{flex:1 1 100%}.hirerow .btn{min-height:44px;padding:0 12px;font-size:15px}.hirerow .delbtn{color:#c0392b}

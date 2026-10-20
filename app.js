@@ -22,13 +22,11 @@ async function items(){let it=await get('items');if(!it){it=[{id:uid(),name:'Pow
 function fmt(d){if(!d)return'';const[y,m,dd]=d.split('-');return`${dd}/${m}/${y}`}
 function addDays(s,n){const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)}
 // ---------- hire length ----------
-// Matches the original quick-set logic: a day hire ended start+1 and a week hire ended start+7,
-// so the hire length is the number of days from start to end (2 Nov to 6 Nov = 4 days). Same-day = 1 day.
-function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5);return Math.max(1,n)}
+// Hire length counts days INCLUSIVELY: 2 Nov to 6 Nov = 5 days, same start and end date = 1 day.
+function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5)+1;return Math.max(1,n)}
 function hireTypeOf(days){return days>=7?'week':'day'}
-function hireLabel(h){const d=h.days||hireDays(h.start,h.end);if(!d)return h.hireType==='week'?'Week hire':'Day hire';
- if(d>=7){const w=Math.floor(d/7),r=d%7;return`${d} days - week hire (${w} week${w>1?'s':''}${r?` + ${r} day${r>1?'s':''}`:''})`}
- return`${d} day${d>1?'s':''} - day hire`}
+// Always recomputed from the dates (older records may hold a hire type or an exclusive day count; both are ignored for display).
+function hireLabel(h){const d=hireDays(h.start,h.end);return d?`${d} day${d>1?'s':''}`:'-'}
 // ---------- navigation ----------
 // A simple back stack so ← returns to the screen you came from (e.g. Settings -> the form you left).
 let cur='home';const stack=[];let form=null;
@@ -124,8 +122,8 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
  <label>Dolly serial number</label><input id="serial" autocomplete="off" placeholder="Fills in from the saved item">
  <label>Fulfilment</label><select id="fulfil"><option value="delivery">Delivery</option><option value="self">Self-collection</option></select>
  <div id="addrWrap"><label>Delivery address</label><textarea id="delAddr"></textarea></div>
- <label>Hire start</label><input type="date" id="start" value="${today()}"><label>Hire end</label><input type="date" id="end" value="${addDays(today(),1)}">
- <div class="quick"><button type="button" class="btn sec" data-quick="1">End +1 day</button><button type="button" class="btn sec" data-quick="7">End +1 week</button></div>
+ <label>Hire start</label><input type="date" id="start" value="${today()}"><label>Hire end</label><input type="date" id="end" value="${today()}">
+ <div class="quick"><button type="button" class="btn sec" data-quick="0">End +1 day</button><button type="button" class="btn sec" data-quick="6">End +1 week</button></div>
  <label>Hire length</label><input id="hireLen" readonly></div>
  ${await driverHTML('','<label>Delivery date</label><input id="delDate" readonly><p class="hint">The delivery date is the hire start date.</p>','Delivery time')}
  ${conditionHTML(null)}${sigHTML()}<div id="errs" class="err"></div><div class="save"><button class="btn" id="saveBtn">Save &amp; download PDF</button></div>`;
@@ -135,7 +133,7 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
  const sync=()=>{showCust(segVal('custType'));showPay(segVal('prepaid'));$('#addrWrap').hidden=$('#fulfil').value!=='delivery';len();syncNotes()};
  bindSegs((n,v)=>{if(n==='custType')showCust(v);if(n==='prepaid')showPay(v);syncNotes()});
  app.querySelectorAll('[data-quick]').forEach(b=>b.onclick=()=>{if(!$('#start').value)return;$('#end').value=addDays($('#start').value,+b.dataset.quick);len();form.touch()});
- $('#start').onchange=()=>{if($('#end').value&&$('#end').value<$('#start').value)$('#end').value=addDays($('#start').value,1);len()};$('#end').onchange=len;
+ $('#start').onchange=()=>{if($('#end').value&&$('#end').value<$('#start').value)$('#end').value=$('#start').value;len()};$('#end').onchange=len;
  $('#fulfil').onchange=()=>$('#addrWrap').hidden=$('#fulfil').value!=='delivery';
  $('#custSel').onchange=()=>{const c=custs.find(c=>c.id===$('#custSel').value);if(c){$('#delAddr').value=c.address||''}};
  $('#cAddr').oninput=()=>$('#delAddr').value=$('#cAddr').value;

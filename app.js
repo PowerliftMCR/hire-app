@@ -22,8 +22,8 @@ async function items(){let it=await get('items');if(!it){it=[{id:uid(),name:'Pow
 function fmt(d){if(!d)return'';const[y,m,dd]=d.split('-');return`${dd}/${m}/${y}`}
 function addDays(s,n){const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)}
 // ---------- hire length ----------
-// Hire length counts days INCLUSIVELY: 2 Nov to 6 Nov = 5 days, same start and end date = 1 day.
-function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5)+1;return Math.max(1,n)}
+// Hire length = end date minus start date (collection day not charged), minimum 1: 21->22 Oct = 1 day, 2->6 Nov = 4 days, same day = 1 day.
+function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5);return Math.max(1,n)}
 function hireTypeOf(days){return days>=7?'week':'day'}
 // Always recomputed from the dates (older records may hold a hire type or an exclusive day count; both are ignored for display).
 function hireLabel(h){const d=hireDays(h.start,h.end);return d?`${d} day${d>1?'s':''}`:'-'}
@@ -123,7 +123,7 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
  <label>Fulfilment</label><select id="fulfil"><option value="delivery">Delivery</option><option value="self">Self-collection</option></select>
  <div id="addrWrap"><label>Delivery address</label><textarea id="delAddr"></textarea></div>
  <label>Hire start</label><input type="date" id="start" value="${today()}"><label>Hire end</label><input type="date" id="end" value="${today()}">
- <div class="quick"><button type="button" class="btn sec" data-quick="0">End +1 day</button><button type="button" class="btn sec" data-quick="6">End +1 week</button></div>
+ <div class="quick"><button type="button" class="btn sec" data-quick="1">End +1 day</button><button type="button" class="btn sec" data-quick="7">End +1 week</button></div>
  <label>Hire length</label><input id="hireLen" readonly></div>
  ${await driverHTML('','<label>Delivery date</label><input id="delDate" readonly><p class="hint">The delivery date is the hire start date.</p>','Delivery time')}
  ${conditionHTML(null)}${sigHTML()}<div id="errs" class="err"></div><div class="save"><button class="btn" id="saveBtn">Save &amp; download PDF</button></div>`;

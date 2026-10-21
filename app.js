@@ -24,9 +24,11 @@ function addDays(s,n){const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate
 // ---------- hire length ----------
 // Hire length = end date minus start date (collection day not charged), minimum 1: 21->22 Oct = 1 day, 2->6 Nov = 4 days, same day = 1 day.
 function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5);return Math.max(1,n)}
-function hireTypeOf(days){return days>=7?'week':'day'}
+function hireTypeOf(days){return days>=4?'week':'day'}
 // Always recomputed from the dates (older records may hold a hire type or an exclusive day count; both are ignored for display).
-function hireLabel(h){const d=hireDays(h.start,h.end);return d?`${d} day${d>1?'s':''}`:'-'}
+// Length label: whole weeks of 7 days; leftover 1-3 days shown as days, 4-6 leftover days round up to another week (weekly rate caps it).
+function lengthLabel(d){if(!d)return'-';let w=Math.floor(d/7),r=d%7;if(r>=4){w++;r=0}const p=[];if(w)p.push(`${w} week${w>1?'s':''}`);if(r)p.push(`${r} day${r>1?'s':''}`);return p.join(' ')}
+function hireLabel(h){return lengthLabel(hireDays(h.start,h.end))}
 // ---------- navigation ----------
 // A simple back stack so ← returns to the screen you came from (e.g. Settings -> the form you left).
 let cur='home';const stack=[];let form=null;
@@ -276,15 +278,15 @@ async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({u
  const name=`${kind}_${(c.name||'Customer').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'')}_${date||today()}.pdf`;return{blob:doc.output('blob'),name}}
 function dims(src){return new Promise(r=>{const i=new Image();i.onload=()=>r({w:i.width||1,h:i.height||1});i.onerror=()=>r({w:4,h:3});i.src=src})}
 // ---------- settings ----------
-async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);
+async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);const lastBk=await get('lastBackup',null);
  const list=[...hires].sort((a,b)=>(b.start||'').localeCompare(a.start||'')||(b.createdAt||'').localeCompare(a.createdAt||''));
  app.innerHTML=`<div class="card"><h2>Hire items</h2><p class="hint">Serial numbers fill in automatically on the delivery form.</p><div class="list" id="itemList"></div><button class="btn sec" id="addItem">+ Add item</button> <button class="btn" id="saveItems">Save items</button></div>
  <div class="card"><h2>Drivers</h2><div id="drvList"></div><div class="list"><div class="item"><input id="newDrv" placeholder="Driver name"><button class="btn" id="addDrv">Add</button></div></div></div>
  <div class="card"><h2>Hire records (${hires.length})</h2>${list.map(h=>`<div class="row hirerow"><span>${esc(h.customer&&h.customer.name)} - ${esc(h.item&&h.item.name)}<br><small class="hint">${fmt(h.start)} to ${fmt(h.end)} &middot; ${h.collection?'Collected':'<b>Active</b>'}</small></span>
   <button class="btn sec" data-pdf="${h.id}" data-kind="Delivery">PDF</button>${h.collection?`<button class="btn sec" data-pdf="${h.id}" data-kind="Collection">Col. PDF</button>`:''}<button class="btn sec delbtn" data-dh="${h.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
  <div class="card"><h2>Saved customers (${custs.length})</h2>${custs.map(c=>`<div class="row"><span>${esc(c.name)}${c.company?' - '+esc(c.company):''}</span><button class="btn sec" data-dc="${c.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
- <div class="card"><h2>Data</h2><p class="hint">${hires.length} hire records stored on this device only (${hires.filter(h=>!h.collection).length} active). Back up regularly.</p>
- <button class="btn sec wide" id="exp">Export backup (JSON)</button><label>Restore backup</label><input type="file" id="imp" accept="application/json"></div>`;
+ <div class="card"><h2>Data</h2><p class="hint">${hires.length} hire records stored on this device only (${hires.filter(h=>!h.collection).length} active). Back up regularly.</p><p class="hint">Last backup: ${lastBk?fmt(lastBk):'never'}</p>
+ <button class="btn sec wide" id="exp">Export backup</button><label>Restore backup</label><input type="file" id="imp" accept="application/json"></div>`;
  const draw=()=>{$('#itemList').innerHTML=its.map((i,k)=>`<div class="item"><input value="${esc(i.name)}" data-k="${k}" placeholder="Item name"><input value="${esc(i.serial||'')}" data-s="${k}" placeholder="Serial no." style="flex:0 0 32%"><button class="btn sec" data-rm="${k}">&times;</button></div>`).join('');
   app.querySelectorAll('[data-k]').forEach(e=>e.oninput=()=>its[e.dataset.k].name=e.value);app.querySelectorAll('[data-s]').forEach(e=>e.oninput=()=>its[e.dataset.s].serial=e.value.trim());app.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{its.splice(+b.dataset.rm,1);draw()})};draw();
  $('#addItem').onclick=()=>{its.push({id:uid(),name:''});draw()};$('#saveItems').onclick=async()=>{its=its.filter(i=>i.name.trim());await put('items',its);toast('Items saved');draw()};
@@ -296,7 +298,7 @@ async function settings(){setHeader('Settings',true);form=null;let its=await ite
   const all=await get('hires',[]);await put('hires',all.filter(x=>x.id!==h.id));const dc=await get('draft-collection');if(dc&&dc.data&&dc.data.hireId===h.id)await del('draft-collection');toast('Hire deleted');settings()});
  app.querySelectorAll('[data-pdf]').forEach(b=>b.onclick=async()=>{const h=hires.find(x=>x.id===b.dataset.pdf);if(!h)return;const o=await makePdf(h,b.dataset.kind);download(o.blob,o.name)});
  app.querySelectorAll('[data-dc]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this customer?'))return;await put('customers',custs.filter(c=>c.id!==b.dataset.dc));settings()});
- $('#exp').onclick=async()=>{const data={customers:await get('customers',[]),items:await get('items',[]),hires:await get('hires',[]),drivers:await get('drivers',[])};download(new Blob([JSON.stringify(data)],{type:'application/json'}),`pdh-backup-${today()}.json`)};
+ $('#exp').onclick=async()=>{const data={customers:await get('customers',[]),items:await get('items',[]),hires:await get('hires',[]),drivers:await get('drivers',[])};const name=`pdh-backup-${today()}.json`,blob=new Blob([JSON.stringify(data)],{type:'application/json'}),file=new File([blob],name,{type:'application/json'});let ok=true;if(canShareFile(file)){try{await navigator.share({files:[file],title:name})}catch(e){if(e&&e.name==='AbortError')ok=false;else download(blob,name)}}else download(blob,name);if(ok){await put('lastBackup',today());settings()}};
  $('#imp').onchange=async e=>{const f=e.target.files[0];if(!f||!confirm('Replace all data on this device with this backup?'))return;const d=JSON.parse(await f.text());for(const k of['customers','items','hires','drivers'])if(d[k])await put(k,d[k]);toast('Backup restored');settings()}}
 const VIEWS={home,delivery,collection,settings};
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');

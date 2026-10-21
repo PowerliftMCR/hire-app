@@ -24,10 +24,10 @@ function addDays(s,n){const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate
 // ---------- hire length ----------
 // Hire length = end date minus start date (collection day not charged), minimum 1: 21->22 Oct = 1 day, 2->6 Nov = 4 days, same day = 1 day.
 function hireDays(start,end){if(!start||!end)return 0;const n=Math.round((new Date(end+'T00:00:00Z')-new Date(start+'T00:00:00Z'))/864e5);return Math.max(1,n)}
-function hireTypeOf(days){return days>=4?'week':'day'}
+function hireTypeOf(days){return days>=3?'week':'day'}
 // Always recomputed from the dates (older records may hold a hire type or an exclusive day count; both are ignored for display).
-// Length label: whole weeks of 7 days; leftover 1-3 days shown as days, 4-6 leftover days round up to another week (weekly rate caps it).
-function lengthLabel(d){if(!d)return'-';let w=Math.floor(d/7),r=d%7;if(r>=4){w++;r=0}const p=[];if(w)p.push(`${w} week${w>1?'s':''}`);if(r)p.push(`${r} day${r>1?'s':''}`);return p.join(' ')}
+// Length label: whole weeks of 7 days; leftover 1-2 days shown as days, 3-6 leftover days round up to another week (weekly rate caps it).
+function lengthLabel(d){if(!d)return'-';let w=Math.floor(d/7),r=d%7;if(r>=3){w++;r=0}const p=[];if(w)p.push(`${w} week${w>1?'s':''}`);if(r)p.push(`${r} day${r>1?'s':''}`);return p.join(' ')}
 function hireLabel(h){return lengthLabel(hireDays(h.start,h.end))}
 // ---------- navigation ----------
 // A simple back stack so ← returns to the screen you came from (e.g. Settings -> the form you left).

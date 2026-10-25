@@ -2,10 +2,15 @@
 const BIZ={name:'Powerwall Dolly Hire',email:'Powerliftmcr@gmail.com',phone:'+44 7729 246809',web:'powerwalldollyhire.co.uk'};
 // Source: powerwalldollyhire.co.uk/hire-terms, clause 9.2 "Damage and missing-item charges"
 const CHECKS=[{name:'Damage to tyre',charge:'£60 each'},{name:'Loss of or damage to ratchet strap',charge:'£50 each'},{name:'Damage to lifting mechanism',charge:'£600'},{name:'Damage to clamp mechanism',charge:'£200'},{name:'Damage to lifting bar',charge:'£250 each'},{name:'Damage to brakes or brake components',charge:'£100'},{name:'Missing Powerwall lifting bar',charge:'£300 each'},{name:'Missing lifting socket',charge:'£30'},{name:'Tracker broken, removed, lost or damaged',charge:'£200'}];
-// Google Drive folders the driver should pick when sharing a PDF
-const DRIVE={Delivery:'Driver Deliveries',Collection:'Driver Collections'};
+// ---------- Google Drive upload ----------
+// PDFs are POSTed to a Google Apps Script web app (drive-upload/Code.gs) running as the Drive owner, which saves them
+// into 01 Customers/<customer>/Jobs, or into 00 Inbox - To File when no customer folder matches.
+// UPLOAD_URL: the web app's /exec URL. UPLOAD_TOKEN: must equal the script's UPLOAD_TOKEN property ('' if none is set).
+const UPLOAD_URL='https://script.google.com/macros/s/AKfycbxAB2B9YzWwqBkaXEZG_S1GigjEj1wwWNLLKBpc9LONNDAm_KreJ0_-_VHMdEjpXk2Q_Q/exec';
+const UPLOAD_TOKEN='';
 // ---------- storage (IndexedDB key-value) ----------
-// Existing keys (unchanged): customers, items, hires, drivers. New keys: lastDriver, draft-delivery, draft-collection.
+// Existing keys (unchanged): customers, items, hires, drivers. Also: lastDriver, draft-delivery, draft-collection, lastBackup,
+// uploadQueue (PDFs not yet confirmed saved in Drive) and uploadLog (last 30 confirmed Drive saves).
 const DB=new Promise((res,rej)=>{const r=indexedDB.open('pdh',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 async function get(k,d){const db=await DB;return new Promise(r=>{const q=db.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>r(q.result===undefined||q.result===null?d:q.result);q.onerror=()=>r(d)})}
 async function put(k,v){const db=await DB;return new Promise((r,j)=>{const t=db.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=r;t.onerror=()=>j(t.error)})}
@@ -109,8 +114,13 @@ function draftBanner(d){const t=new Date(d.savedAt);return`<div class="card draf
 async function home(){cur='home';form=null;setHeader('Powerwall Dolly Hire',false);const hires=await get('hires',[]);const act=hires.filter(h=>!h.collection).length;
  const dd=await get('draft-delivery'),dc=await get('draft-collection');
  app.innerHTML=`<button class="big del" id="goDel">Delivery${dd?'<div style="font-size:15px;font-weight:500;margin-top:6px">Draft in progress</div>':''}</button><button class="big col" id="goCol">Collection<div style="font-size:15px;font-weight:500;margin-top:6px">${act} active hire${act===1?'':'s'}${dc?' &middot; draft in progress':''}</div></button>
+ <div class="card pend" id="pendCard" hidden><span id="pendTxt"></span><button class="btn" id="pendRetry">Retry now</button></div>
  <p class="hint" style="text-align:center">${BIZ.email} &middot; ${BIZ.phone}</p>`;
- $('#goDel').onclick=()=>go('delivery');$('#goCol').onclick=()=>go('collection');scrollTo(0,0)}
+ $('#goDel').onclick=()=>go('delivery');$('#goCol').onclick=()=>go('collection');
+ $('#pendRetry').onclick=async()=>{$('#pendRetry').disabled=true;$('#pendTxt').textContent='Saving to Google Drive...';const r=await flushQueue(true);if(r.fail)toast(`${r.fail} PDF${r.fail===1?'':'s'} still not saved: ${r.lastError}`);else if(r.ok)toast('Saved to Google Drive');refreshPending()};
+ refreshPending();scrollTo(0,0)}
+async function refreshPending(){const c=$('#pendCard');if(!c)return;const q=await get('uploadQueue',[]);c.hidden=!q.length;$('#pendRetry').disabled=false;
+ $('#pendTxt').innerHTML=`<b>${q.length} PDF${q.length===1?'':'s'} waiting to save to Google Drive.</b><br><small class="hint">Kept on this tablet; the app retries when there's signal.</small>`}
 // ---------- delivery ----------
 async function delivery(){setHeader('Delivery',true);form=null;const custs=await get('customers',[]);const its=await items();const draft=await get('draft-delivery');
  app.innerHTML=`${draft?draftBanner(draft):''}<div class="card"><h2>Customer</h2>${seg('custType',[['existing','Existing'],['new','New']],custs.length?'existing':'new')}
@@ -160,7 +170,7 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
    delivery:{date:$('#start').value,time:$('#time').value,savedAt:new Date().toISOString(),driver:drv,...readCond(null),...sig},collection:null};
   if(ct==='new'){custs.push(cust);await put('customers',custs)}
   const hires=await get('hires',[]);hires.push(rec);await put('hires',hires);await rememberDriver(drv);await saveSerial(item.id,serial);
-  await F.discard();form=null;done(await makePdf(rec,'Delivery'),'Delivery')}}
+  await F.discard();form=null;done(await makePdf(rec,'Delivery'),'Delivery',rec)}}
 // ---------- collection ----------
 async function collection(){setHeader('Collection',true);form=null;const hires=await get('hires',[]);const act=hires.filter(h=>!h.collection);let draft=await get('draft-collection');
  if(draft&&!act.find(h=>h.id===draft.data.hireId)){await del('draft-collection');draft=null}
@@ -204,21 +214,53 @@ async function collection(){setHeader('Collection',true);form=null;const hires=a
   rec.collection={date:$('#colDate').value,time:$('#time').value,savedAt:new Date().toISOString(),driver:drv,serial,late:segVal('late')==='yes',
    damages:{items:di.map(({i,...d})=>d),calculated:calc,amount:amt,overridden:di.length>0&&Math.abs(amt-calc)>0.001,notes:di.length?$('#dmgNotes').value.trim():'',invoice:di.length?segVal('dmgInv')==='yes':false},...readCond(h.delivery),...sig};
   if(serial&&!rec.item.serial)rec.item.serial=serial;
-  await put('hires',all);await rememberDriver(drv);if(serial)await saveSerial(h.item.id,serial);await F.discard();form=null;done(await makePdf(rec,'Collection'),'Collection')};
+  await put('hires',all);await rememberDriver(drv);if(serial)await saveSerial(h.item.id,serial);await F.discard();form=null;done(await makePdf(rec,'Collection'),'Collection',rec)};
  $('#hireSel').onchange=()=>render(false);
  if(draft){$('#hireSel').value=draft.data.hireId;await render(true);F.restored=true}}
 // ---------- after save ----------
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}
 function canShareFile(f){try{return!!(navigator.canShare&&navigator.share&&navigator.canShare({files:[f]}))}catch(_){return false}}
-function done({blob,name},kind){cur='saved';stack.length=0;form=null;setHeader('Saved',true);const url=URL.createObjectURL(blob);const file=new File([blob],name,{type:'application/pdf'});const share=canShareFile(file);
+function done({blob,name},kind,rec){cur='saved';stack.length=0;form=null;setHeader('Saved',true);const url=URL.createObjectURL(blob);const file=new File([blob],name,{type:'application/pdf'});const share=canShareFile(file);
  app.innerHTML=`<div class="card"><h2>Saved &#10003;</h2><p>${esc(name)} has been downloaded.</p>
- <p><button class="btn wide" id="shareBtn">${share?'Share PDF':'Download PDF to save to Drive'}</button></p>
- <p class="hint" id="shareHint">${share?'Choose the Google Drive app, then pick':'Then upload it in the Google Drive app to'} the <b>${DRIVE[kind]}</b> folder.</p>
+ <div class="drive pending" id="driveStatus">Saving to Google Drive...</div>
+ <p><button class="btn wide" id="retryBtn" hidden>Retry saving to Drive</button></p>
+ <p><button class="btn wide sec" id="shareBtn">${share?'Share PDF':'Download PDF'}</button></p>
+ <p class="hint" id="shareHint">The app saves the PDF into the customer's Google Drive folder for you. Use ${share?'Share':'Download'} only if you need another copy.</p>
  <p><a class="btn wide sec" style="display:flex;align-items:center;justify-content:center;text-decoration:none" href="${url}" download="${esc(name)}" id="dlAgain">Download PDF again</a></p>
  <p><button class="btn wide sec" id="homeBtn">Back to home</button></p></div>`;
  $('#homeBtn').onclick=()=>go('home');
- $('#shareBtn').onclick=async()=>{if(canShareFile(file)){try{await navigator.share({files:[file],title:name,text:`Save to Google Drive > ${DRIVE[kind]}`})}catch(e){if(e&&e.name!=='AbortError')download(blob,name)}}else download(blob,name)};
- download(blob,name);scrollTo(0,0)}
+ $('#shareBtn').onclick=async()=>{if(canShareFile(file)){try{await navigator.share({files:[file],title:name})}catch(e){if(e&&e.name!=='AbortError')download(blob,name)}}else download(blob,name)};
+ download(blob,name);scrollTo(0,0);
+ let qid=null;const attempt=async()=>{const st=$('#driveStatus'),rb=$('#retryBtn');if(!st)return;st.className='drive pending';st.textContent='Saving to Google Drive...';rb.hidden=true;
+  try{if(!qid)qid=(await enqueueUpload(rec,kind,blob,name)).id;const r=await sendQueued(qid);if(!$('#driveStatus'))return;showDriveResult(st,r)}
+  catch(e){if(!$('#driveStatus'))return;st.className='drive fail';st.innerHTML=`<b>Not saved to Google Drive yet.</b> ${esc(e&&e.message||e)}<br><small>The PDF is kept on this tablet and the app will keep retrying when there's signal.</small>`;rb.hidden=false}};
+ $('#retryBtn').onclick=attempt;attempt()}
+function showDriveResult(st,r){if(r.matched){st.className='drive ok';st.innerHTML=`<b>Saved to Drive: ${esc(r.folderName||r.folder)}</b><br><small>${esc(r.folder||'')}</small>${r.url?`<br><a href="${esc(r.url)}" target="_blank" rel="noopener">Open in Drive</a>`:''}`}
+ else{st.className='drive warn';st.innerHTML=`<b>Saved to Drive: ${esc(r.folderName||'00 Inbox - To File')}</b><br><small>No customer folder matched, so it needs filing into the right customer folder by hand.</small>${r.url?`<br><a href="${esc(r.url)}" target="_blank" rel="noopener">Open in Drive</a>`:''}`}}
+// ---------- Drive upload queue ----------
+// A PDF is queued in IndexedDB before the first upload attempt and leaves the queue only once the web app confirms the save,
+// so nothing is lost with no signal. The web app de-duplicates by upload id, so a retry after a lost reply can't make a second copy.
+const blobToB64=b=>new Promise((r,j)=>{const f=new FileReader();f.onload=()=>r(String(f.result).split(',')[1]||'');f.onerror=()=>j(f.error);f.readAsDataURL(b)});
+function postcodeOf(a){const m=String(a||'').toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/);return m?`${m[1]} ${m[2]}`:''}
+function jobMeta(h,kind){const isDel=kind==='Delivery',r=(isDel?h.delivery:h.collection)||{},c=h.customer||{};
+ return{hireId:h.id,jobDate:isDel?(h.start||r.date||''):(r.date||''),time:r.time||'',company:c.company||'',contact:c.name||'',address:h.address||c.address||'',postcode:postcodeOf(h.address||c.address),
+  item:(h.item&&h.item.name)||'',serial:(isDel?(h.item&&h.item.serial):(r.serial||(h.item&&h.item.serial)))||'',driver:r.driver||'',start:h.start||'',end:h.end||''}}
+async function enqueueUpload(h,kind,blob,name){const it={id:uid(),kind,name,b64:await blobToB64(blob),customer:{name:(h.customer&&h.customer.name)||'',company:(h.customer&&h.customer.company)||''},meta:jobMeta(h,kind),createdAt:new Date().toISOString(),tries:0,lastError:''};
+ const q=await get('uploadQueue',[]);q.push(it);await put('uploadQueue',q);return it}
+async function postUpload(it){if(!UPLOAD_URL)throw new Error('Drive upload is not set up in this version of the app.');if(navigator.onLine===false)throw new Error('No internet connection.');
+ const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),60000);let r;
+ try{r=await fetch(UPLOAD_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:UPLOAD_TOKEN,id:it.id,kind:it.kind,filename:it.name,customer:it.customer,meta:it.meta,pdf:it.b64}),signal:ctl.signal,redirect:'follow',cache:'no-store'})}
+ catch(e){throw new Error(e&&e.name==='AbortError'?'Drive took too long to answer.':'Could not reach Google Drive (no signal?).')}finally{clearTimeout(t)}
+ if(!r.ok)throw new Error(`Drive upload failed (HTTP ${r.status}).`);let j;try{j=await r.json()}catch(_){throw new Error('Unexpected reply from the Drive upload service.')}
+ if(!j||!j.ok)throw new Error((j&&j.error)||'Drive upload was refused.');return j}
+const inflight=new Map();
+function sendQueued(id){if(inflight.has(id))return inflight.get(id);const p=(async()=>{const q=await get('uploadQueue',[]);const it=q.find(x=>x.id===id);if(!it){const lg=await get('uploadLog',[]);const d=lg.find(x=>x.id===id);if(d)return d;throw new Error('Upload not found.')}
+  try{const r=await postUpload(it);const res={id,name:it.name,kind:it.kind,matched:!!r.matched,folder:r.folder||'',folderName:r.folderName||'',url:r.url||'',fileId:r.fileId||'',at:new Date().toISOString()};
+   const q2=await get('uploadQueue',[]);await put('uploadQueue',q2.filter(x=>x.id!==id));const lg=await get('uploadLog',[]);lg.unshift(res);await put('uploadLog',lg.slice(0,30));return res}
+  catch(e){const q2=await get('uploadQueue',[]);const x=q2.find(y=>y.id===id);if(x){x.tries=(x.tries||0)+1;x.lastError=String(e&&e.message||e);x.lastTry=new Date().toISOString();await put('uploadQueue',q2)}throw e}})().finally(()=>inflight.delete(id));
+ inflight.set(id,p);return p}
+let flushing=null;
+function flushQueue(){if(flushing)return flushing;flushing=(async()=>{const q=await get('uploadQueue',[]);let ok=0,fail=0,lastError='';for(const it of q){try{await sendQueued(it.id);ok++}catch(e){fail++;lastError=String(e&&e.message||e)}}return{ok,fail,lastError}})().finally(()=>{flushing=null;refreshPending()});return flushing}
 // ---------- PDF ----------
 async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'mm',format:'a4',compress:true});const W=210,M=14,BOT=284;let y=0;
  const isDel=kind==='Delivery';const r=(isDel?h.delivery:h.collection)||{};const c=h.customer||{};
@@ -278,14 +320,14 @@ async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({u
  const name=`${kind}_${(c.name||'Customer').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'')}_${date||today()}.pdf`;return{blob:doc.output('blob'),name}}
 function dims(src){return new Promise(r=>{const i=new Image();i.onload=()=>r({w:i.width||1,h:i.height||1});i.onerror=()=>r({w:4,h:3});i.src=src})}
 // ---------- settings ----------
-async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);const lastBk=await get('lastBackup',null);
+async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);const lastBk=await get('lastBackup',null);const upQ=await get('uploadQueue',[]);
  const list=[...hires].sort((a,b)=>(b.start||'').localeCompare(a.start||'')||(b.createdAt||'').localeCompare(a.createdAt||''));
  app.innerHTML=`<div class="card"><h2>Hire items</h2><p class="hint">Serial numbers fill in automatically on the delivery form.</p><div class="list" id="itemList"></div><button class="btn sec" id="addItem">+ Add item</button> <button class="btn" id="saveItems">Save items</button></div>
  <div class="card"><h2>Drivers</h2><div id="drvList"></div><div class="list"><div class="item"><input id="newDrv" placeholder="Driver name"><button class="btn" id="addDrv">Add</button></div></div></div>
  <div class="card"><h2>Hire records (${hires.length})</h2>${list.map(h=>`<div class="row hirerow"><span>${esc(h.customer&&h.customer.name)} - ${esc(h.item&&h.item.name)}<br><small class="hint">${fmt(h.start)} to ${fmt(h.end)} &middot; ${h.collection?'Collected':'<b>Active</b>'}</small></span>
   <button class="btn sec" data-pdf="${h.id}" data-kind="Delivery">PDF</button>${h.collection?`<button class="btn sec" data-pdf="${h.id}" data-kind="Collection">Col. PDF</button>`:''}<button class="btn sec delbtn" data-dh="${h.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
  <div class="card"><h2>Saved customers (${custs.length})</h2>${custs.map(c=>`<div class="row"><span>${esc(c.name)}${c.company?' - '+esc(c.company):''}</span><button class="btn sec" data-dc="${c.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
- <div class="card"><h2>Data</h2><p class="hint">${hires.length} hire records stored on this device only (${hires.filter(h=>!h.collection).length} active). Back up regularly.</p><p class="hint">Last backup: ${lastBk?fmt(lastBk):'never'}</p>
+ <div class="card"><h2>Data</h2><p class="hint">${hires.length} hire records stored on this device only (${hires.filter(h=>!h.collection).length} active). Back up regularly.</p><p class="hint">Last backup: ${lastBk?fmt(lastBk):'never'}</p><p class="hint" id="upInfo">PDFs waiting to save to Google Drive: ${upQ.length}${upQ.length?` <button class="btn sec" id="upRetry">Retry now</button>`:''}</p>
  <button class="btn sec wide" id="exp">Export backup</button><label>Restore backup</label><input type="file" id="imp" accept="application/json"></div>`;
  const draw=()=>{$('#itemList').innerHTML=its.map((i,k)=>`<div class="item"><input value="${esc(i.name)}" data-k="${k}" placeholder="Item name"><input value="${esc(i.serial||'')}" data-s="${k}" placeholder="Serial no." style="flex:0 0 32%"><button class="btn sec" data-rm="${k}">&times;</button></div>`).join('');
   app.querySelectorAll('[data-k]').forEach(e=>e.oninput=()=>its[e.dataset.k].name=e.value);app.querySelectorAll('[data-s]').forEach(e=>e.oninput=()=>its[e.dataset.s].serial=e.value.trim());app.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{its.splice(+b.dataset.rm,1);draw()})};draw();
@@ -299,7 +341,10 @@ async function settings(){setHeader('Settings',true);form=null;let its=await ite
  app.querySelectorAll('[data-pdf]').forEach(b=>b.onclick=async()=>{const h=hires.find(x=>x.id===b.dataset.pdf);if(!h)return;const o=await makePdf(h,b.dataset.kind);download(o.blob,o.name)});
  app.querySelectorAll('[data-dc]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this customer?'))return;await put('customers',custs.filter(c=>c.id!==b.dataset.dc));settings()});
  $('#exp').onclick=async()=>{const data={customers:await get('customers',[]),items:await get('items',[]),hires:await get('hires',[]),drivers:await get('drivers',[])};const name=`pdh-backup-${today()}.json`,blob=new Blob([JSON.stringify(data)],{type:'application/json'}),file=new File([blob],name,{type:'application/json'});let ok=true;if(canShareFile(file)){try{await navigator.share({files:[file],title:name})}catch(e){if(e&&e.name==='AbortError')ok=false;else download(blob,name)}}else download(blob,name);if(ok){await put('lastBackup',today());settings()}};
+ if($('#upRetry'))$('#upRetry').onclick=async()=>{const r=await flushQueue();toast(r.fail?`${r.fail} still waiting: ${r.lastError}`:'Saved to Google Drive');if(cur==='settings')settings()};
  $('#imp').onchange=async e=>{const f=e.target.files[0];if(!f||!confirm('Replace all data on this device with this backup?'))return;const d=JSON.parse(await f.text());for(const k of['customers','items','hires','drivers'])if(d[k])await put(k,d[k]);toast('Backup restored');settings()}}
 const VIEWS={home,delivery,collection,settings};
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
 history.replaceState({v:'home'},'');home();
+// Retry queued Drive uploads on open, when signal returns, and when the app comes back to the foreground.
+flushQueue();addEventListener('online',()=>flushQueue());document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')flushQueue()});

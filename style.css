@@ -34,3 +34,9 @@ canvas.sig{width:100%;height:170px;border:2px dashed #8aa;border-radius:10px;bac
 .lb{background:#3F5468}
 .lbi{align-items:flex-start;padding:8px 0;border-bottom:1px solid #eee}.lbi input{flex:0 0 28px;margin-top:2px}.lbi span{flex:1}.lbi.miss{color:#c0392b}.lbi.miss input{outline:2px solid #c0392b}
 .chk[hidden]{display:none}
+.booksum{white-space:pre-wrap;background:#FBF2EC;border:1px solid #B4632B;border-radius:10px;padding:10px;margin:10px 0 0;font-size:14px;color:#1F252D}
+
+.pinmodal{position:fixed;inset:0;z-index:20;background:#1F252D99;display:flex;align-items:center;justify-content:center;padding:20px}
+.pinmodal .card{width:100%;max-width:400px;margin:0}
+.pinmodal input{letter-spacing:.35em;text-align:center;font-size:24px;font-weight:600}
+.pinmodal .btn.wide{margin-top:12px}

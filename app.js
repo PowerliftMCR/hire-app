@@ -12,6 +12,7 @@ const UPLOAD_TOKEN='';
 // Existing keys (unchanged): customers, items, hires, drivers. Also: lastDriver, draft-delivery, draft-collection, lastBackup,
 // uploadQueue (PDFs not yet confirmed saved in Drive) and uploadLog (last 30 confirmed Drive saves).
 // v13: leaveBase (completed leave-base checks, newest first), draft-leave-base, notifyQueue (leave-base messages to Dylan not yet confirmed).
+// v14: customers may include a booking object from the Master Sheet Bookings tab; customersSyncedAt is the last successful sync; customersPin is the 4-8 digit read PIN stored on this device.
 const DB=new Promise((res,rej)=>{const r=indexedDB.open('pdh',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 async function get(k,d){const db=await DB;return new Promise(r=>{const q=db.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>r(q.result===undefined||q.result===null?d:q.result);q.onerror=()=>r(d)})}
 async function put(k,v){const db=await DB;return new Promise((r,j)=>{const t=db.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=r;t.onerror=()=>j(t.error)})}
@@ -35,6 +36,134 @@ function hireTypeOf(days){return days>=3?'week':'day'}
 // Length label: whole weeks of 7 days; leftover 1-2 days shown as days, 3-6 leftover days round up to another week (weekly rate caps it).
 function lengthLabel(d){if(!d)return'-';let w=Math.floor(d/7),r=d%7;if(r>=3){w++;r=0}const p=[];if(w)p.push(`${w} week${w>1?'s':''}`);if(r)p.push(`${r} day${r>1?'s':''}`);return p.join(' ')}
 function hireLabel(h){return lengthLabel(hireDays(h.start,h.end))}
+// ---------- customer sync (pure: no DOM, tested by /workspace/out/customers-sync.test.js) ----------
+function sheetCustomerId(bookingId, company, name){
+  const id=String(bookingId||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,60);
+  if(id)return 'sh-'+id;
+  const fb=(String(company||'')+'-'+String(name||'')).replace(/[^A-Za-z0-9_-]+/g,'-').replace(/^-|-$/g,'').slice(0,60);
+  return 'sh-'+(fb||'unknown')}
+function sameCust(a,b){const n=s=>String(s||'').trim().toLowerCase();return n(a&&a.name)===n(b&&b.name)&&n(a&&a.company)===n(b&&b.company)&&n(a&&a.name)!==''}
+/** Merge remote sheet customers into the local list. Never deletes local customers. Match by id, else company+name (once). */
+function mergeCustomers(local, remote){
+  const out=(local||[]).map(c=>{const n={...c};if(c.booking)n.booking={...c.booking};return n});
+  const used=new Set();let added=0,updated=0;
+  for(const r of remote||[]){
+    if(!r||!r.id)continue;
+    let i=out.findIndex(c=>c.id===r.id);
+    if(i<0)i=out.findIndex(c=>!used.has(c.id)&&sameCust(c,r));
+    if(i>=0){
+      used.add(out[i].id);
+      const prev=out[i], next={...prev, name:r.name||prev.name, company:r.company!==undefined&&r.company!==''?r.company:prev.company,
+        phone:r.phone!==undefined&&r.phone!==''?r.phone:prev.phone, email:r.email||prev.email, address:r.address||prev.address};
+      if(r.booking)next.booking={...(prev.booking||{}),...r.booking};
+      out[i]=next;updated++}
+    else{out.push({id:r.id,name:r.name||'',company:r.company||'',phone:r.phone||'',email:r.email||'',address:r.address||'',booking:r.booking||null});used.add(r.id);added++}}
+  return{customers:out,added,updated}}
+function customerOptionLabel(c){
+  let s=c&&c.name||'Customer';if(c&&c.company)s+=' ('+c.company+')';
+  const b=c&&c.booking;if(!b)return s;
+  const bits=[];if(b.start)bits.push(fmt(b.start)+(b.end&&b.end!==b.start?'–'+fmt(b.end):''));
+  if(b.siteAddress)bits.push(b.siteAddress);else if(b.po)bits.push('PO '+b.po);
+  return bits.length?s+' — '+bits.join(', '):s}
+function bookingSummaryText(c){
+  const b=c&&c.booking;if(!b)return'';
+  const lines=[];if(b.siteAddress)lines.push('Site: '+b.siteAddress);
+  if(b.start||b.end)lines.push('Hire: '+(b.start?fmt(b.start):'?')+' to '+(b.end?fmt(b.end):'?')+(b.time?' at '+b.time:''));
+  if(b.item)lines.push('Item: '+b.item);if(b.po)lines.push('PO: '+b.po);if(b.invoice)lines.push('Invoice: '+b.invoice);
+  if(b.notes)lines.push(b.notes);return lines.join('\n')}
+/** Field values to apply from a customer booking. current values equal to defaults (e.g. today's date) count as empty. Never overwrites a non-empty, non-default field. */
+function bookingPrefill(cust, current, items, defaults){
+  const cur=current||{}, def=defaults||{}, empty=(v,d)=>!String(v??'').trim()||(d!==undefined&&d!==null&&String(v)===String(d));
+  const out={}, b=cust&&cust.booking;
+  const site=b&&b.siteAddress||(cust&&cust.address)||'';
+  if(site&&empty(cur.delAddr, def.delAddr))out.delAddr=site;
+  if(!b)return out;
+  if(b.start&&empty(cur.start, def.start))out.start=b.start;
+  if(b.end&&empty(cur.end, def.end))out.end=b.end;
+  if(b.time&&empty(cur.time, def.time))out.time=b.time;
+  if(b.prepaid&&empty(cur.prepaid, def.prepaid))out.prepaid=b.prepaid;
+  if(b.invoice&&empty(cur.invoice, def.invoice))out.invoice=b.invoice;
+  if(b.payMethod&&empty(cur.payMethod, def.payMethod))out.payMethod=b.payMethod;
+  if(b.item&&empty(cur.itemId, def.itemId)){const it=(items||[]).find(i=>String(i.name||'').trim().toLowerCase()===String(b.item).trim().toLowerCase());if(it)out.itemId=it.id}
+  if(b.po)out.po=b.po;if(b.notes)out.notes=b.notes;return out}
+function customersRequestUrl(base,pin){const u=String(base||'')+(String(base||'').indexOf('?')>=0?'&':'?')+'action=customers';return pin?u+'&pin='+encodeURIComponent(pin):u}
+function isValidPin(p){return/^\d{4,8}$/.test(String(p||''))}
+/** Classify a customers-endpoint JSON body. Returns {ok:true,customers} or {ok:false,error,code?}. Never treats a pin/locked error as a customer list. */
+function interpretCustomersResponse(data){
+  if(data&&data.ok===false){const e=String(data.error||'pin');const code=(e==='pin'||e==='locked')?e:'error';return{ok:false,error:e,code}}
+  if(!data||data.ok!==true||!Array.isArray(data.customers))return{ok:false,error:(data&&data.error)||'Bad customers response',code:'error'};
+  return{ok:true,customers:data.customers}}
+// ---------- customer sync (end pure) ----------
+// Fetch Bookings from the Apps Script (GET ?action=customers&pin=...). Timeout, never blocks the UI, never deletes local customers. Offline is a no-op.
+const SYNC_MS=8000;
+let customerSyncing=null,pinPromptedThisLaunch=false,pinLockedThisLaunch=false,pinPromptPending=null;
+async function fetchCustomersRemote(pin){if(!UPLOAD_URL)return null;if(typeof navigator!=='undefined'&&navigator.onLine===false)return null;
+  const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),SYNC_MS);
+  try{const res=await fetch(customersRequestUrl(UPLOAD_URL,pin),{method:'GET',signal:ctl.signal,cache:'no-store'});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const parsed=interpretCustomersResponse(data);
+    if(!parsed.ok){const err=new Error(parsed.error);err.code=parsed.code;throw err}
+    return parsed.customers}
+  finally{clearTimeout(t)}}
+function promptForPin(opts){
+  if(typeof document==='undefined')return Promise.resolve(null);
+  if(pinPromptPending)return pinPromptPending;
+  const wrong=opts&&opts.wrong;
+  pinPromptPending=new Promise(resolve=>{
+    if($('#pinModal'))$('#pinModal').remove();
+    const el=document.createElement('div');el.id='pinModal';el.className='pinmodal';el.setAttribute('role','dialog');el.setAttribute('aria-labelledby','pinTitle');
+    el.innerHTML=`<div class="card"><h2 id="pinTitle">Customer sync PIN</h2><p class="hint" id="pinHint">${wrong?'That PIN was not accepted. Enter the customer PIN.':'Enter the customer PIN to sync customers.'}</p><label for="pinInput">PIN</label><input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" minlength="4" maxlength="8" autocomplete="one-time-code" autocapitalize="off" spellcheck="false"><p class="err" id="pinErr" hidden></p><button type="button" class="btn wide" id="pinOk">Continue</button><button type="button" class="btn sec wide" id="pinSkip">Not now</button></div>`;
+    document.body.appendChild(el);
+    const input=$('#pinInput'),err=$('#pinErr');
+    const finish=v=>{el.remove();pinPromptPending=null;resolve(v)};
+    input.addEventListener('input',()=>{input.value=String(input.value||'').replace(/\D/g,'').slice(0,8);err.hidden=true});
+    const submit=()=>{const p=String(input.value||'').replace(/\D/g,'');if(!isValidPin(p)){err.hidden=false;err.textContent='Enter the customer PIN (4 to 8 digits)';input.focus();return}finish(p)};
+    $('#pinOk').onclick=submit;
+    $('#pinSkip').onclick=()=>finish(null);
+    input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();submit()}});
+    setTimeout(()=>input.focus(),50);
+  });
+  return pinPromptPending}
+async function askForPin(opts){
+  pinPromptedThisLaunch=true;
+  const p=await promptForPin(opts);
+  if(p)await put('customersPin',p);
+  return p||null}
+async function syncCustomers(opts){if(customerSyncing)return customerSyncing;if(pinLockedThisLaunch){if(typeof toast==='function')toast('Customer sync is locked. Try again later.');return{ok:false,error:'locked',locked:true}}
+  const silent=!opts||opts.silent!==false;
+  customerSyncing=(async()=>{try{
+      if(typeof navigator!=='undefined'&&navigator.onLine===false)return{ok:false,skipped:true};
+      let pin=await get('customersPin','');
+      let prompted=false;
+      if(!isValidPin(pin)){
+        if(silent&&pinPromptedThisLaunch)return{ok:false,skipped:true,error:'pin'};
+        pin=await askForPin();prompted=true;
+        if(!isValidPin(pin))return{ok:false,skipped:true,error:'pin'}}
+      const tryFetch=async(p)=>{const remote=await fetchCustomersRemote(p);if(!remote)return{ok:false,skipped:true};
+        const local=await get('customers',[]);const{customers,added,updated}=mergeCustomers(local,remote);
+        await put('customers',customers);await put('customersSyncedAt',new Date().toISOString());
+        return{ok:true,added,updated,count:remote.length}};
+      try{return await tryFetch(pin)}
+      catch(e){
+        if(e&&e.code==='locked'){pinLockedThisLaunch=true;if(typeof toast==='function')toast('Customer sync is locked. Try again later.');return{ok:false,error:'locked',locked:true}}
+        if(e&&e.code==='pin'){
+          await del('customersPin');
+          if(prompted||(silent&&pinPromptedThisLaunch)){if(typeof toast==='function')toast('That PIN was not accepted');return{ok:false,error:'pin'}}
+          const next=await askForPin({wrong:true});prompted=true;
+          if(!isValidPin(next)){return{ok:false,error:'pin'}}
+          try{return await tryFetch(next)}
+          catch(e2){
+            if(e2&&e2.code==='locked'){pinLockedThisLaunch=true;if(typeof toast==='function')toast('Customer sync is locked. Try again later.');return{ok:false,error:'locked',locked:true}}
+            if(e2&&e2.code==='pin'){await del('customersPin');if(typeof toast==='function')toast('That PIN was not accepted');return{ok:false,error:'pin'}}
+            throw e2}}
+        throw e}}
+    catch(e){const err=String(e&&e.message||e);if(!silent)throw e;return{ok:false,error:err}}
+    finally{customerSyncing=null}})();
+  return customerSyncing}
+function kickCustomerSync(){syncCustomers({silent:true})}
+function syncedAtLabel(iso){if(!iso)return'Customers not synced yet';const d=new Date(iso);if(isNaN(d))return'Customers not synced yet';return'Customers synced '+pad2(d.getHours())+':'+pad2(d.getMinutes())}
+
 // ---------- leave base (pure: no DOM, tested by /workspace/out/leave-base.test.js) ----------
 // Packing check done at the Bury base before a delivery. Callüm's list first, then the agreed extras.
 // when: 'pw2' = only when lifting a Powerwall 2, 'tracki' = only when leaving the Tracki on site.
@@ -155,7 +284,7 @@ async function refreshPending(){const c=$('#pendCard');if(!c)return;const q=awai
 // ---------- delivery ----------
 async function delivery(){setHeader('Delivery',true);form=null;const custs=await get('customers',[]);const its=await items();const draft=await get('draft-delivery');
  app.innerHTML=`${draft?draftBanner(draft):''}<div class="card"><h2>Customer</h2>${seg('custType',[['existing','Existing'],['new','New']],custs.length?'existing':'new')}
- <div id="custExisting"><label>Select customer</label><select id="custSel"><option value="">-- choose --</option>${custs.map(c=>`<option value="${c.id}">${esc(c.name)}${c.company?' ('+esc(c.company)+')':''}</option>`).join('')}</select></div>
+ <div id="custExisting"><label>Select customer</label><select id="custSel"><option value="">-- choose --</option>${custs.map(c=>`<option value="${c.id}">${esc(customerOptionLabel(c))}</option>`).join('')}</select><div id="bookSum" class="booksum" hidden></div></div>
  <div id="custNew"><label>Name</label><input id="cName" autocomplete="off"><label>Company</label><input id="cCompany"><label>Phone</label><input id="cPhone" type="tel"><label>Email</label><input id="cEmail" type="email"><label>Address</label><textarea id="cAddr"></textarea></div></div>
  <div class="card"><h2>Payment</h2><label>Prepaid?</label>${seg('prepaid',[['yes','Yes'],['no','No']],'')}
  <div id="payYes" hidden><label>Invoice number</label><input id="invoice"></div>
@@ -174,16 +303,23 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
  const showPay=v=>{$('#payYes').hidden=v!=='yes';$('#payNo').hidden=v!=='no'};
  const len=()=>{const s=$('#start').value,e=$('#end').value;$('#delDate').value=fmt(s);$('#hireLen').value=s&&e?(e<s?'End date is before start date':hireLabel({start:s,end:e})):''};
  const sync=()=>{showCust(segVal('custType'));showPay(segVal('prepaid'));$('#addrWrap').hidden=$('#fulfil').value!=='delivery';len();syncNotes()};
- bindSegs((n,v)=>{if(n==='custType')showCust(v);if(n==='prepaid')showPay(v);syncNotes()});
+ bindSegs((n,v)=>{if(n==='custType'){showCust(v);const sum=$('#bookSum');if(sum){if(v!=='existing')sum.hidden=true;else{const c=custs.find(c=>c.id===(($('#custSel')||{}).value||''));const t=bookingSummaryText(c);sum.hidden=!t;sum.textContent=t}}}if(n==='prepaid')showPay(v);syncNotes()});
  app.querySelectorAll('[data-quick]').forEach(b=>b.onclick=()=>{if(!$('#start').value)return;$('#end').value=addDays($('#start').value,+b.dataset.quick);len();form.touch()});
  $('#start').onchange=()=>{if($('#end').value&&$('#end').value<$('#start').value)$('#end').value=$('#start').value;len()};$('#end').onchange=len;
  $('#fulfil').onchange=()=>$('#addrWrap').hidden=$('#fulfil').value!=='delivery';
- $('#custSel').onchange=()=>{const c=custs.find(c=>c.id===$('#custSel').value);if(c){$('#delAddr').value=c.address||''}};
- $('#cAddr').oninput=()=>$('#delAddr').value=$('#cAddr').value;
+ const formDefaults={start:$('#start').value,end:$('#end').value,time:$('#time').value};
+ const applyCustPrefill=c=>{const sum=$('#bookSum');if(sum){const t=bookingSummaryText(c);sum.hidden=!t;sum.textContent=t}
+  if(!c)return;const cur={delAddr:$('#delAddr').value,start:$('#start').value,end:$('#end').value,time:$('#time').value,prepaid:segVal('prepaid'),invoice:$('#invoice').value,payMethod:$('#payMethod').value,itemId:$('#item').value};
+  const p=bookingPrefill(c,cur,its,formDefaults);
+  if(p.delAddr)$('#delAddr').value=p.delAddr;if(p.start)$('#start').value=p.start;if(p.end)$('#end').value=p.end;if(p.time)$('#time').value=p.time;
+  if(p.prepaid){setSeg('prepaid',p.prepaid);showPay(p.prepaid)}if(p.invoice)$('#invoice').value=p.invoice;if(p.payMethod)$('#payMethod').value=p.payMethod;
+  if(p.itemId){$('#item').value=p.itemId;const it=its.find(i=>i.id===p.itemId);$('#serial').value=it&&it.serial||''}len()};
+ $('#custSel').onchange=()=>{const c=custs.find(c=>c.id===$('#custSel').value);applyCustPrefill(c||null)};
+ $('#cAddr').oninput=()=>{$('#delAddr').value=$('#cAddr').value};
  $('#item').onchange=()=>{const it=its.find(i=>i.id===$('#item').value);$('#serial').value=it&&it.serial||''};
  bindPhotos();bindSigs();bindDriver();
  const F=startForm('draft-delivery');
- if(draft){await applyForm(draft.data);F.restored=true;$('#driver').dispatchEvent(new Event('change'))}
+ if(draft){await applyForm(draft.data);F.restored=true;$('#driver').dispatchEvent(new Event('change'));const c=custs.find(c=>c.id===$('#custSel').value);const sum=$('#bookSum');if(sum){const t=bookingSummaryText(c);sum.hidden=!t;sum.textContent=t}}
  sync();
  if(draft)$('#discardDraft').onclick=async()=>{if(!confirm('Discard this draft and start a blank form?'))return;await F.discard();form=null;delivery()};
  $('#saveBtn').onclick=async()=>{const err=[];let cust;const ct=segVal('custType');
@@ -197,7 +333,7 @@ async function delivery(){setHeader('Delivery',true);form=null;const custs=await
   const sig=readSigs(err);if(err.length){$('#errs').textContent='Please complete: '+err.join(', ');$('#errs').scrollIntoView({behavior:'smooth'});return}
   $('#errs').textContent='';const serial=$('#serial').value.trim();const days=hireDays($('#start').value,$('#end').value);
   const rec={id:uid(),createdAt:new Date().toISOString(),customer:cust,payment:{prepaid:pre==='yes',invoice:$('#invoice').value.trim(),method:pre==='no'?$('#payMethod').value:'',confirmed:pre==='no'&&$('#payConf').checked},
-   item:{id:item.id,name:item.name,serial},fulfilment:$('#fulfil').value,address:$('#fulfil').value==='delivery'?$('#delAddr').value.trim():'',hireType:hireTypeOf(days),days,start:$('#start').value,end:$('#end').value,
+   item:{id:item.id,name:item.name,serial},fulfilment:$('#fulfil').value,address:$('#fulfil').value==='delivery'?$('#delAddr').value.trim():'',hireType:hireTypeOf(days),days,start:$('#start').value,end:$('#end').value,po:(cust.booking&&cust.booking.po)||'',
    delivery:{date:$('#start').value,time:$('#time').value,savedAt:new Date().toISOString(),driver:drv,...readCond(null),...sig},collection:null};
   if(ct==='new'){custs.push(cust);await put('customers',custs)}
   const hires=await get('hires',[]);hires.push(rec);await put('hires',hires);await rememberDriver(drv);await saveSerial(item.id,serial);
@@ -253,7 +389,7 @@ async function collection(){setHeader('Collection',true);form=null;const hires=a
 async function leaveBase(){setHeader('Leave base',true);form=null;pads={};photos=[];const custs=await get('customers',[]);const draft=await get('draft-leave-base');
  const tick=i=>`<label class="chk lbi" data-item="${i.id}"${i.when?` data-when="${i.when}"`:''}><input type="checkbox" id="lb_${i.id}"><span>${esc(i.name)}${i.hint?`<br><small class="hint">${esc(i.hint)}</small>`:''}</span></label>`;
  app.innerHTML=`${draft?draftBanner(draft):''}<div class="card"><h2>Customer</h2><p class="hint">Packing check before leaving the Bury base. Not the on-site delivery form.</p>${seg('custType',[['existing','Existing'],['new','New']],custs.length?'existing':'new')}
- <div id="custExisting"><label>Select customer</label><select id="custSel"><option value="">-- choose --</option>${custs.map(c=>`<option value="${c.id}">${esc(c.name)}${c.company?' ('+esc(c.company)+')':''}</option>`).join('')}</select></div>
+ <div id="custExisting"><label>Select customer</label><select id="custSel"><option value="">-- choose --</option>${custs.map(c=>`<option value="${c.id}">${esc(customerOptionLabel(c))}</option>`).join('')}</select><div id="bookSum" class="booksum" hidden></div></div>
  <div id="custNew"><label>Name</label><input id="cName" autocomplete="off"><label>Company</label><input id="cCompany"><label>Phone</label><input id="cPhone" type="tel"><label>Email</label><input id="cEmail" type="email"><label>Address</label><textarea id="cAddr"></textarea></div></div>
  <div class="card"><h2>This job</h2><label>Lifting a Powerwall 2?</label>${seg('pw2',[['yes','Yes'],['no','No']],'')}<label>Leaving Tracki on site?</label>${seg('tracki',[['yes','Yes'],['no','No']],'')}</div>
  <div class="card"><h2>Kit</h2>${LB_ITEMS.filter(i=>!i.extra).map(tick).join('')}</div>
@@ -263,10 +399,12 @@ async function leaveBase(){setHeader('Leave base',true);form=null;pads={};photos
  <div id="errs" class="err"></div><div class="save"><button class="btn" id="saveBtn">Save &amp; tell Dylan</button></div>`;
  const showCust=t=>{$('#custExisting').hidden=t!=='existing';$('#custNew').hidden=t!=='new'};
  const syncLb=()=>{const pw2=segVal('pw2'),tr=segVal('tracki');app.querySelectorAll('.lbi[data-when]').forEach(l=>l.hidden=!(l.dataset.when==='pw2'?pw2==='yes':tr==='yes'))};
- bindSegs((n,v)=>{if(n==='custType')showCust(v);syncLb()});bindDriver();
+ const showBook=()=>{const c=custs.find(c=>c.id===(($('#custSel')||{}).value||''));const sum=$('#bookSum');if(!sum)return;const t=segVal('custType')==='existing'?bookingSummaryText(c):'';sum.hidden=!t;sum.textContent=t};
+ bindSegs((n,v)=>{if(n==='custType'){showCust(v);showBook()}syncLb()});bindDriver();
+ $('#custSel').onchange=showBook;
  const F=startForm('draft-leave-base');
  if(draft){await applyForm(draft.data);F.restored=true;$('#driver').dispatchEvent(new Event('change'))}
- showCust(segVal('custType'));syncLb();
+ showCust(segVal('custType'));syncLb();showBook();
  if(draft)$('#discardDraft').onclick=async()=>{if(!confirm('Discard this draft and start a blank form?'))return;await F.discard();form=null;leaveBase()};
  $('#saveBtn').onclick=async()=>{let cust;const ct=segVal('custType');
   if(ct==='existing')cust=custs.find(c=>c.id===$('#custSel').value);
@@ -384,6 +522,7 @@ async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({u
  if(isDel){cust.push(['Prepaid',p.prepaid?'Yes':'No']);if(p.prepaid)cust.push(['Invoice no.',p.invoice]);else{cust.push(['Payment method',p.method]);cust.push(['Payment conf.',p.confirmed?'Yes':'No'])}}
  else{cust.push(['Payment',p.prepaid?'Prepaid'+(p.invoice?' (inv. '+p.invoice+')':'')+' - no hire balance due':'Not prepaid'+(p.method?', '+p.method:'')+(p.confirmed?', confirmed':', not confirmed')]);
   hire.push(['Delivered',fmt(h.start||(h.delivery&&h.delivery.date))+(h.delivery&&h.delivery.time?' '+h.delivery.time:'')]);hire.push(['Collected late',r.late?'YES':'No'])}
+ if(h.po)cust.push(['PO no.',h.po]);
  twoCols('Customer',cust,'Hire',hire);
  sect('Condition checklist (hire terms cl. 9.2)');doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(90);doc.text('Item',M+2,y);doc.text('Standard charge',M+100,y);doc.text('Status',M+135,y);doc.setTextColor(0);y+=5;
  (r.checks||[]).forEach(k=>{need(6);doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.text(k.name,M+2,y);doc.text(k.charge||'',M+100,y);
@@ -416,14 +555,14 @@ async function makePdf(h,kind){const {jsPDF}=window.jspdf;const doc=new jsPDF({u
  const name=`${kind}_${(c.name||'Customer').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'')}_${date||today()}.pdf`;return{blob:doc.output('blob'),name}}
 function dims(src){return new Promise(r=>{const i=new Image();i.onload=()=>r({w:i.width||1,h:i.height||1});i.onerror=()=>r({w:4,h:3});i.src=src})}
 // ---------- settings ----------
-async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);const lastBk=await get('lastBackup',null);const upQ=await get('uploadQueue',[]);const lbs=await get('leaveBase',[]);const nQ=await get('notifyQueue',[]);
+async function settings(){setHeader('Settings',true);form=null;let its=await items();const custs=await get('customers',[]);const hires=await get('hires',[]);let drivers=await get('drivers',[]);const lastBk=await get('lastBackup',null);const upQ=await get('uploadQueue',[]);const lbs=await get('leaveBase',[]);const nQ=await get('notifyQueue',[]);const syncedAt=await get('customersSyncedAt',null);
  const list=[...hires].sort((a,b)=>(b.start||'').localeCompare(a.start||'')||(b.createdAt||'').localeCompare(a.createdAt||''));
  app.innerHTML=`<div class="card"><h2>Hire items</h2><p class="hint">Serial numbers fill in automatically on the delivery form.</p><div class="list" id="itemList"></div><button class="btn sec" id="addItem">+ Add item</button> <button class="btn" id="saveItems">Save items</button></div>
  <div class="card"><h2>Drivers</h2><div id="drvList"></div><div class="list"><div class="item"><input id="newDrv" placeholder="Driver name"><button class="btn" id="addDrv">Add</button></div></div></div>
  <div class="card"><h2>Hire records (${hires.length})</h2>${list.map(h=>`<div class="row hirerow"><span>${esc(h.customer&&h.customer.name)} - ${esc(h.item&&h.item.name)}<br><small class="hint">${fmt(h.start)} to ${fmt(h.end)} &middot; ${h.collection?'Collected':'<b>Active</b>'}</small></span>
   <button class="btn sec" data-pdf="${h.id}" data-kind="Delivery">PDF</button>${h.collection?`<button class="btn sec" data-pdf="${h.id}" data-kind="Collection">Col. PDF</button>`:''}<button class="btn sec delbtn" data-dh="${h.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
  <div class="card"><h2>Leave-base checks (${lbs.length})</h2>${lbs.slice(0,5).map(r=>`<div class="row"><span>${esc(r.customer&&r.customer.name)}${r.customer&&r.customer.company?' - '+esc(r.customer.company):''}<br><small class="hint">${fmt(r.date)} ${esc(r.time)} &middot; ${esc(r.driver)} &middot; ${r.notifiedAt?'Dylan told':'<b>Dylan not told yet</b>'}</small></span></div>`).join('')||'<p class="hint">None yet</p>'}${lbs.length>5?`<p class="hint">Showing the latest 5. All ${lbs.length} are in the backup.</p>`:''}</div>
- <div class="card"><h2>Saved customers (${custs.length})</h2>${custs.map(c=>`<div class="row"><span>${esc(c.name)}${c.company?' - '+esc(c.company):''}</span><button class="btn sec" data-dc="${c.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
+ <div class="card"><h2>Saved customers (${custs.length})</h2><p class="hint" id="custSyncLine">${esc(syncedAtLabel(syncedAt))}</p><p><button type="button" class="btn sec" id="custSync">Sync customers now</button></p>${custs.map(c=>`<div class="row"><span>${esc(c.name)}${c.company?' - '+esc(c.company):''}${c.booking&&c.booking.start?`<br><small class="hint">${esc(customerOptionLabel(c).split(' — ')[1]||fmt(c.booking.start))}</small>`:''}</span><button class="btn sec" data-dc="${c.id}">Delete</button></div>`).join('')||'<p class="hint">None yet</p>'}</div>
  <div class="card"><h2>Data</h2><p class="hint">${hires.length} hire records stored on this device only (${hires.filter(h=>!h.collection).length} active). Back up regularly.</p><p class="hint">Last backup: ${lastBk?fmt(lastBk):'never'}</p><p class="hint" id="upInfo">PDFs waiting to save to Google Drive: ${upQ.length}${upQ.length?` <button class="btn sec" id="upRetry">Retry now</button>`:''}</p>${nQ.length?`<p class="hint">Leave-base messages waiting for Dylan: ${nQ.length} <button class="btn sec" id="nRetry">Retry now</button></p>`:''}
  <button class="btn sec wide" id="exp">Export backup</button><label>Restore backup</label><input type="file" id="imp" accept="application/json"></div>`;
  const draw=()=>{$('#itemList').innerHTML=its.map((i,k)=>`<div class="item"><input value="${esc(i.name)}" data-k="${k}" placeholder="Item name"><input value="${esc(i.serial||'')}" data-s="${k}" placeholder="Serial no." style="flex:0 0 32%"><button class="btn sec" data-rm="${k}">&times;</button></div>`).join('');
@@ -437,6 +576,9 @@ async function settings(){setHeader('Settings',true);form=null;let its=await ite
   const all=await get('hires',[]);await put('hires',all.filter(x=>x.id!==h.id));const dc=await get('draft-collection');if(dc&&dc.data&&dc.data.hireId===h.id)await del('draft-collection');toast('Hire deleted');settings()});
  app.querySelectorAll('[data-pdf]').forEach(b=>b.onclick=async()=>{const h=hires.find(x=>x.id===b.dataset.pdf);if(!h)return;const o=await makePdf(h,b.dataset.kind);download(o.blob,o.name)});
  app.querySelectorAll('[data-dc]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this customer?'))return;await put('customers',custs.filter(c=>c.id!==b.dataset.dc));settings()});
+ if($('#custSync'))$('#custSync').onclick=async()=>{const btn=$('#custSync');btn.disabled=true;$('#custSyncLine').textContent='Syncing customers...';
+  try{const r=await syncCustomers({silent:false});if(r.ok)toast(`Customers synced (${r.count} from sheet)`);else if(r.error!=='pin'&&r.error!=='locked'&&!r.skipped)toast('Could not sync customers')}catch(e){toast('Could not sync: '+(e&&e.message||e))}
+  if(cur==='settings')settings()};
  $('#exp').onclick=async()=>{const data={customers:await get('customers',[]),items:await get('items',[]),hires:await get('hires',[]),drivers:await get('drivers',[]),leaveBase:await get('leaveBase',[])};const name=`pdh-backup-${today()}.json`,blob=new Blob([JSON.stringify(data)],{type:'application/json'}),file=new File([blob],name,{type:'application/json'});let ok=true;if(canShareFile(file)){try{await navigator.share({files:[file],title:name})}catch(e){if(e&&e.name==='AbortError')ok=false;else download(blob,name)}}else download(blob,name);if(ok){await put('lastBackup',today());settings()}};
  if($('#nRetry'))$('#nRetry').onclick=async()=>{const r=await flushNotify();toast(r.fail?`Dylan still not told: ${r.lastError}`:'Dylan has been told');if(cur==='settings')settings()};
  if($('#upRetry'))$('#upRetry').onclick=async()=>{const r=await flushQueue();toast(r.fail?`${r.fail} still waiting: ${r.lastError}`:'Saved to Google Drive');if(cur==='settings')settings()};
@@ -444,5 +586,5 @@ async function settings(){setHeader('Settings',true);form=null;let its=await ite
 const VIEWS={home,leaveBase,delivery,collection,settings};
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
 history.replaceState({v:'home'},'');home();
-// Retry queued Drive uploads and leave-base messages to Dylan on open, when signal returns, and when the app comes back to the foreground.
-flushQueue();flushNotify();addEventListener('online',()=>{flushQueue();flushNotify()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){flushQueue();flushNotify()}});
+// Retry queued Drive uploads and leave-base messages to Dylan, and sync customers, on open, when signal returns, and when the app comes back to the foreground. Sync never blocks the UI.
+flushQueue();flushNotify();kickCustomerSync();addEventListener('online',()=>{flushQueue();flushNotify();kickCustomerSync()});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){flushQueue();flushNotify();kickCustomerSync()}});
